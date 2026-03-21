@@ -1,0 +1,365 @@
+<style>
+/* ── 拖拽排序 ── */
+.socat-drag-handle {
+	cursor: grab;
+	color: #999;
+	font-size: 16px;
+	padding: 0 6px;
+	user-select: none;
+	display: inline-block;
+}
+.socat-drag-handle:active { cursor: grabbing; }
+tr.socat-dragging { opacity: .4; background: #e8f0fe !important; }
+tr.socat-drag-over { border-top: 2px solid #2563eb; }
+
+/* ── 状态徽章 ── */
+.socat-status-badge {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 3px;
+	font-size: 11px;
+	font-weight: 500;
+}
+.socat-badge-run  { background: #dcfce7; color: #166534; }
+.socat-badge-stop { background: #fee2e2; color: #991b1b; }
+.socat-badge-dis  { background: #f1f5f9; color: #64748b; }
+
+/* ── 连接数 ── */
+.socat-conns {
+	font-family: monospace;
+	font-size: 13px;
+	color: #334155;
+	font-weight: 500;
+}
+
+/* ── 全局状态卡 ── */
+.socat-info-box {
+	background: #f8fafc;
+	border: 1px solid #e2e8f0;
+	border-radius: 6px;
+	padding: 12px 16px;
+	margin-bottom: 16px;
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.socat-info-box .svc-label { font-size: 15px; font-weight: 600; flex: 1; color: #1e293b; }
+.socat-global-badge { display:inline-block; padding:3px 12px; border-radius:4px; font-size:12px; font-weight:600; }
+.socat-actions { display: flex; gap: 8px; }
+
+/* ── 日志面板头部（样式供 socat_log.htm 用） ── */
+.socat-log-header {
+	background: #1e293b;
+	padding: 8px 14px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+/* ── 流量统计卡 ── */
+#socat-stats-bar {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+}
+.socat-stat-card {
+	background: #fff;
+	border: 1px solid #e2e8f0;
+	border-radius: 6px;
+	padding: 8px 14px;
+	min-width: 110px;
+	text-align: center;
+}
+.socat-stat-card .sc-num  { font-size: 22px; font-weight: 600; color: #1e293b; }
+.socat-stat-card .sc-lbl  { font-size: 11px; color: #64748b; margin-top: 2px; }
+</style>
+
+<!-- ── 全局状态卡 ── -->
+<div class="socat-info-box">
+	<span class="svc-label">⚡ Socat 服务</span>
+	<span id="socat-global-badge" class="socat-global-badge socat-badge-dis">检测中…</span>
+	<div class="socat-actions">
+		<input type="button" class="btn cbi-button cbi-button-apply"
+			value="全部重启" onclick="socatRestartAll()">
+	</div>
+</div>
+
+<!-- ── 汇总统计条 ── -->
+<div id="socat-stats-bar">
+	<div class="socat-stat-card">
+		<div class="sc-num" id="stat-running">—</div>
+		<div class="sc-lbl">运行中实例</div>
+	</div>
+	<div class="socat-stat-card">
+		<div class="sc-num" id="stat-total">—</div>
+		<div class="sc-lbl">规则总数</div>
+	</div>
+	<div class="socat-stat-card">
+		<div class="sc-num" id="stat-conns">—</div>
+		<div class="sc-lbl">总活跃连接</div>
+	</div>
+</div>
+
+<!-- ── 日志面板（位于此处确保 DOM 先于 JS 存在） ── -->
+<div id="socat-log-panel" style="display:none; margin-top:8px; border:1px solid #e2e8f0; border-radius:6px; overflow:hidden;">
+	<div class="socat-log-header">
+		<span id="socat-log-title" style="flex:1; color:#e2e8f0; font-size:13px; font-weight:500;">日志</span>
+		<div style="display:flex; gap:8px; align-items:center;">
+			<select id="socat-log-lines" onchange="socatRefreshLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">
+				<option value="50">最近 50 行</option>
+				<option value="100" selected>最近 100 行</option>
+				<option value="200">最近 200 行</option>
+				<option value="500">最近 500 行</option>
+			</select>
+			<button type="button" onclick="socatRefreshLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">刷新</button>
+			<button type="button" onclick="socatClearLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">清空显示</button>
+		</div>
+		<button type="button" onclick="socatHideLog()"
+			style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1; padding:0 4px; margin-left:8px;">×</button>
+	</div>
+	<div id="socat-log-body"
+		style="background:#0f172a; color:#94a3b8; font-family:monospace; font-size:12px; line-height:1.6; padding:12px 14px; max-height:360px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;">
+		等待查看日志…
+	</div>
+</div>
+
+<script type="text/javascript">
+(function () {
+	var BASE      = '<%=luci.dispatcher.build_url("admin/services/socat")%>';
+	var logTimer  = null;
+	var logName   = '';
+	var pollTimer = null;
+
+	/* ── 工具 ── */
+	function xhr(url, cb) {
+		XHR.get(url, null, function(x, data) { cb && cb(data); });
+	}
+	function post(url, params, cb) {
+		XHR.post(url, params, function(x, data) { cb && cb(data); });
+	}
+
+	/* ── 状态轮询 ── */
+	function fetchStatus() {
+		xhr(BASE + '/status', function(data) {
+			if (!data) return;
+			var running = 0, total = 0;
+			Object.keys(data).forEach(function(k) {
+				var info  = data[k];
+				var badge = document.getElementById('status_' + k);
+				total++;
+				if (!badge) {
+					if (info.enabled && info.running) running++;
+					return;
+				}
+				if (!info.enabled) {
+					badge.className = 'socat-status-badge socat-badge-dis';
+					badge.textContent = '已禁用';
+				} else if (info.running) {
+					badge.className = 'socat-status-badge socat-badge-run';
+					badge.textContent = '运行中';
+					running++;
+				} else {
+					badge.className = 'socat-status-badge socat-badge-stop';
+					badge.textContent = '已停止';
+				}
+			});
+			var gb = document.getElementById('socat-global-badge');
+			document.getElementById('stat-running').textContent = running;
+			document.getElementById('stat-total').textContent   = total;
+			if (running > 0) {
+				gb.className = 'socat-global-badge socat-badge-run';
+				gb.textContent = running + ' 个运行中';
+			} else if (total > 0) {
+				gb.className = 'socat-global-badge socat-badge-stop';
+				gb.textContent = '全部已停止';
+			} else {
+				gb.className = 'socat-global-badge socat-badge-dis';
+				gb.textContent = '无规则';
+			}
+		});
+	}
+
+	/* ── 连接数轮询 ── */
+	function fetchConns() {
+		xhr(BASE + '/conns', function(data) {
+			if (!data) return;
+			var total = 0;
+			Object.keys(data).forEach(function(k) {
+				var el = document.getElementById('conns_' + k);
+				var c  = data[k] ? (data[k].conns || 0) : 0;
+				total += c;
+				if (el) el.textContent = c > 0 ? c : '—';
+			});
+			document.getElementById('stat-conns').textContent = total || '—';
+		});
+	}
+
+	function poll() {
+		fetchStatus();
+		fetchConns();
+	}
+	poll();
+	pollTimer = setInterval(poll, 5000);
+
+	/* ── 全部重启 ── */
+	window.socatRestartAll = function() {
+		post(BASE + '/restart', '', function() {
+			setTimeout(poll, 1800);
+		});
+	};
+
+	/* ── 日志 ── */
+	window.socatShowLog = function(name) {
+		logName = name;
+		var panel = document.getElementById('socat-log-panel');
+		if (!panel) return;
+		panel.style.display = 'block';
+		document.getElementById('socat-log-title').textContent = '日志  —  ' + name;
+		socatRefreshLog();
+		// 启动日志自动刷新（30 秒一次）
+		if (logTimer) clearInterval(logTimer);
+		logTimer = setInterval(socatRefreshLog, 30000);
+		// 日志面板在规则列表下方，直接滚动到它即可
+		setTimeout(function() {
+			panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+		}, 50);
+	};
+
+	window.socatHideLog = function() {
+		var panel = document.getElementById('socat-log-panel');
+		if (panel) panel.style.display = 'none';
+		if (logTimer) { clearInterval(logTimer); logTimer = null; }
+	};
+
+	window.socatRefreshLog = function() {
+		if (!logName) return;
+		var linesEl = document.getElementById('socat-log-lines');
+		var lines   = linesEl ? linesEl.value : '100';
+		xhr(BASE + '/log?name=' + encodeURIComponent(logName) + '&lines=' + lines, function(data) {
+			var body = document.getElementById('socat-log-body');
+			if (!body) return;
+			if (!data || !data.lines || data.lines.length === 0) {
+				body.textContent = '（暂无日志，请确认 logd 服务运行中，或 socat 进程尚未产生输出）';
+				return;
+			}
+			// 着色：ERROR 红色，WARN 黄色，INFO/notice 绿色
+			var html = data.lines.map(function(l) {
+				var escaped = l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+				if (/error|err\b/i.test(l))  return '<span style="color:#f87171">' + escaped + '</span>';
+				if (/warn/i.test(l))          return '<span style="color:#fbbf24">' + escaped + '</span>';
+				if (/notice|info/i.test(l))   return '<span style="color:#6ee7b7">' + escaped + '</span>';
+				return escaped;
+			}).join('\n');
+			body.innerHTML = html;
+			body.scrollTop = body.scrollHeight;
+		});
+	};
+
+	window.socatClearLog = function() {
+		var body = document.getElementById('socat-log-body');
+		if (body) body.textContent = '';
+	};
+
+	/* ── 拖拽排序 ── */
+	(function initDrag() {
+		var tbody  = null;
+		var dragEl = null;
+		var dragInited = false;
+
+		function tryInit() {
+			if (dragInited) return;
+			var tables = document.querySelectorAll('table.cbi-section-table');
+			tables.forEach(function(tbl) {
+				var h = tbl.querySelector('.socat-drag-handle');
+				if (h) tbody = tbl.querySelector('tbody');
+			});
+			if (!tbody) return;
+			dragInited = true;
+			mountDrag(tbody);
+		}
+
+		document.addEventListener('DOMContentLoaded', tryInit);
+		setTimeout(tryInit, 800);
+
+		function mountDrag(tb) {
+			tb.addEventListener('dragstart', onDragStart);
+			tb.addEventListener('dragover',  onDragOver);
+			tb.addEventListener('drop',      onDrop);
+			tb.addEventListener('dragend',   onDragEnd);
+			Array.from(tb.rows).forEach(function(tr) {
+				var handle = tr.querySelector('.socat-drag-handle');
+				if (handle) {
+					tr.setAttribute('draggable', 'true');
+					tr.dataset.section = handle.dataset.section;
+				}
+			});
+		}
+
+		function getRow(el) {
+			while (el && el.tagName !== 'TR') el = el.parentElement;
+			return el;
+		}
+
+		function onDragStart(e) {
+			dragEl = getRow(e.target);
+			if (!dragEl || !dragEl.dataset.section) { dragEl = null; return; }
+			setTimeout(function() { dragEl && dragEl.classList.add('socat-dragging'); }, 0);
+			e.dataTransfer.effectAllowed = 'move';
+		}
+
+		function onDragOver(e) {
+			e.preventDefault();
+			e.dataTransfer.dropEffect = 'move';
+			var over = getRow(e.target);
+			if (!over || over === dragEl || !over.dataset.section) return;
+			Array.from(tbody.rows).forEach(function(r) { r.classList.remove('socat-drag-over'); });
+			over.classList.add('socat-drag-over');
+		}
+
+		function onDrop(e) {
+			e.preventDefault();
+			var over = getRow(e.target);
+			if (!over || !dragEl || over === dragEl) return;
+			var rows = Array.from(tbody.rows);
+			var fromIdx = rows.indexOf(dragEl);
+			var toIdx   = rows.indexOf(over);
+			if (fromIdx < toIdx) {
+				tbody.insertBefore(dragEl, over.nextSibling);
+			} else {
+				tbody.insertBefore(dragEl, over);
+			}
+			saveOrder();
+		}
+
+		function onDragEnd() {
+			if (dragEl) dragEl.classList.remove('socat-dragging');
+			Array.from(tbody.rows).forEach(function(r) { r.classList.remove('socat-drag-over'); });
+			dragEl = null;
+		}
+
+		function saveOrder() {
+			var order = Array.from(tbody.rows)
+				.map(function(r) { return r.dataset.section; })
+				.filter(Boolean)
+				.join(',');
+			if (!order) return;
+			post(BASE + '/reorder', 'order=' + encodeURIComponent(order), function(data) {
+				if (data && data.ok) {
+					var tip = document.createElement('div');
+					tip.textContent = '排序已保存';
+					tip.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#1e293b;color:#f1f5f9;' +
+						'padding:8px 16px;border-radius:6px;font-size:13px;z-index:9999;transition:opacity .3s';
+					document.body.appendChild(tip);
+					setTimeout(function() { tip.style.opacity = '0'; }, 1800);
+					setTimeout(function() { document.body.removeChild(tip); }, 2100);
+				}
+			});
+		}
+	})();
+})();
+</script>

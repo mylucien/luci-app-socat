@@ -1,0 +1,25 @@
+<!-- ── 日志面板（位于规则列表下方） ── -->
+<div id="socat-log-panel" style="display:none; margin-top:8px; border:1px solid #e2e8f0; border-radius:6px; overflow:hidden;">
+	<div class="socat-log-header">
+		<span id="socat-log-title" style="flex:1; color:#e2e8f0; font-size:13px; font-weight:500;">日志</span>
+		<div style="display:flex; gap:8px; align-items:center;">
+			<select id="socat-log-lines" onchange="socatRefreshLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">
+				<option value="50">最近 50 行</option>
+				<option value="100" selected>最近 100 行</option>
+				<option value="200">最近 200 行</option>
+				<option value="500">最近 500 行</option>
+			</select>
+			<button onclick="socatRefreshLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">刷新</button>
+			<button onclick="socatClearLog()"
+				style="font-size:12px; padding:3px 8px; border-radius:3px; border:1px solid #475569; background:#334155; color:#e2e8f0; cursor:pointer;">清空显示</button>
+		</div>
+		<button onclick="socatHideLog()"
+			style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1; padding:0 4px; margin-left:8px;">×</button>
+	</div>
+	<div id="socat-log-body"
+		style="background:#0f172a; color:#94a3b8; font-family:monospace; font-size:12px; line-height:1.6; padding:12px 14px; max-height:360px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;">
+		等待查看日志…
+	</div>
+</div>

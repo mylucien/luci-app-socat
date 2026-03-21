@@ -1,0 +1,488 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2024 OpenWrt.org
+
+START=90
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/bin/socat
+RUNDIR=/var/run/socat
+
+# ======================================================================
+# 防火墙检测与规则管理
+# 自动识别 firewall3（iptables）和 firewall4（nftables），无需手动配置
+# ======================================================================
+
+# 检测防火墙后端
+detect_fw() {
+	if command -v nft >/dev/null 2>&1 && nft list tables 2>/dev/null | grep -q "inet fw4"; then
+		echo "fw4"
+	elif command -v iptables >/dev/null 2>&1; then
+		echo "fw3"
+	else
+		echo "none"
+	fi
+}
+
+FW_BACKEND=""
+
+# 将协议名归一化为防火墙所需协议（tcp/udp）
+fw_proto() {
+	case "$1" in
+		tcp*|openssl) echo "tcp" ;;
+		udp*)         echo "udp" ;;
+		*)            echo ""    ;;
+	esac
+}
+
+# ── fw4 (nftables) ──────────────────────────────────────────────────
+# ImmortalWrt 23.05 / OpenWrt 23.05 默认使用 fw4
+# 通过在 nftables 的 inet fw4 表里追加独立 chain 来隔离规则，
+# 不污染系统 input/forward chain，stop 时只需 delete chain 即可。
+
+fw4_chain="socat_input"
+
+fw4_ensure_chain() {
+	# 若 chain 不存在则创建并挂钩到 input（优先级 -1，在 fw4 default 之前）
+	nft list chain inet fw4 ${fw4_chain} >/dev/null 2>&1 && return 0
+	nft add chain inet fw4 ${fw4_chain} \
+		'{ type filter hook input priority -1; policy accept; }' 2>/dev/null || {
+		# fw4 的 input hook 已被占用时，改用 add rule 挂到已有 chain
+		nft add chain inet fw4 ${fw4_chain} 2>/dev/null
+		nft add rule inet fw4 input jump ${fw4_chain} 2>/dev/null
+	}
+}
+
+fw4_add_rule() {
+	local section="$1" proto="$2" addr="$3" port="$4"
+	[ -z "$proto" ] && return 0
+	[ -z "$port" ] && return 0
+	fw4_ensure_chain
+	local comment="socat_${section}"
+	local addr_expr=""
+	[ -n "$addr" ] && addr_expr="ip daddr ${addr} "
+	nft add rule inet fw4 ${fw4_chain} \
+		${addr_expr}${proto} dport ${port} accept comment \"${comment}\" 2>/dev/null
+}
+
+fw4_del_rules() {
+	# 删除整条 chain（包含所有本实例的规则）时按注释精确匹配
+	local section="$1"
+	# 逐条删除匹配此 section 的规则
+	local handles
+	handles=$(nft -a list chain inet fw4 ${fw4_chain} 2>/dev/null | \
+		grep "comment \"socat_${section}\"" | \
+		awk '{for(i=1;i<=NF;i++) if($i=="handle" && $(i+1)~/^[0-9]+$/) print $(i+1)}')
+	for h in $handles; do
+		nft delete rule inet fw4 ${fw4_chain} handle "$h" 2>/dev/null
+	done
+}
+
+fw4_flush() {
+	# 停止服务时清空整条 chain
+	nft flush chain inet fw4 ${fw4_chain} 2>/dev/null
+	nft delete chain inet fw4 ${fw4_chain} 2>/dev/null
+}
+
+# ── fw3 (iptables) ──────────────────────────────────────────────────
+# OpenWrt 21.02 及更早版本默认使用 fw3
+# 使用独立 chain SOCAT_INPUT 并从 INPUT 跳转，便于整体清理。
+
+fw3_chain="SOCAT_INPUT"
+
+fw3_ensure_chain() {
+	iptables -t filter -N ${fw3_chain} 2>/dev/null
+	# 防止重复插入跳转规则
+	iptables -t filter -C INPUT -j ${fw3_chain} 2>/dev/null || \
+		iptables -t filter -I INPUT -j ${fw3_chain} 2>/dev/null
+	# IPv6
+	ip6tables -t filter -N ${fw3_chain} 2>/dev/null
+	ip6tables -t filter -C INPUT -j ${fw3_chain} 2>/dev/null || \
+		ip6tables -t filter -I INPUT -j ${fw3_chain} 2>/dev/null
+}
+
+fw3_add_rule() {
+	local section="$1" proto="$2" addr="$3" port="$4"
+	[ -z "$proto" ] && return 0
+	[ -z "$port" ] && return 0
+	fw3_ensure_chain
+	local dst_expr=""
+	[ -n "$addr" ] && dst_expr="-d ${addr}"
+	local comment="socat_${section}"
+	iptables  -t filter -A ${fw3_chain} -p "$proto" $dst_expr \
+		--dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null
+	ip6tables -t filter -A ${fw3_chain} -p "$proto" $dst_expr \
+		--dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null
+}
+
+fw3_del_rules() {
+	local section="$1" proto comment
+	comment="socat_${section}"
+	# iptables 不支持按注释批量删，逐条匹配行号倒序删除
+	for ipt in iptables ip6tables; do
+		local nums
+		nums=$($ipt -t filter -L ${fw3_chain} --line-numbers 2>/dev/null | \
+			grep "$comment" | awk '{print $1}' | sort -rn)
+		for n in $nums; do
+			$ipt -t filter -D ${fw3_chain} "$n" 2>/dev/null
+		done
+	done
+}
+
+fw3_flush() {
+	for ipt in iptables ip6tables; do
+		$ipt -t filter -F ${fw3_chain} 2>/dev/null
+		$ipt -t filter -D INPUT -j ${fw3_chain} 2>/dev/null
+		$ipt -t filter -X ${fw3_chain} 2>/dev/null
+	done
+}
+
+# ── 统一接口 ────────────────────────────────────────────────────────
+
+fw_add_rule() {
+	local section="$1" proto="$2" addr="$3" port="$4"
+	case "$FW_BACKEND" in
+		fw4) fw4_add_rule "$section" "$proto" "$addr" "$port" ;;
+		fw3) fw3_add_rule "$section" "$proto" "$addr" "$port" ;;
+	esac
+}
+
+fw_del_rules() {
+	local section="$1"
+	case "$FW_BACKEND" in
+		fw4) fw4_del_rules "$section" ;;
+		fw3) fw3_del_rules "$section" ;;
+	esac
+}
+
+fw_flush_all() {
+	case "$FW_BACKEND" in
+		fw4) fw4_flush ;;
+		fw3) fw3_flush ;;
+	esac
+}
+
+# IGMP 放行规则：允许本机收到 IGMP 报文（组播组成员管理协议）
+# fw4: nftables meta l4proto igmp accept
+# fw3: iptables -p igmp -j ACCEPT
+fw_add_igmp_rule() {
+	local section="$1"
+	local iface="$2"
+	local comment="socat_igmp_${section}"
+	case "$FW_BACKEND" in
+		fw4)
+			fw4_ensure_chain
+			local iif_expr=""
+			[ -n "$iface" ] && iif_expr="iifname \"${iface}\" "
+			nft add rule inet fw4 ${fw4_chain} ${iif_expr}meta l4proto igmp accept comment \"${comment}\" 2>/dev/null
+			;;
+		fw3)
+			fw3_ensure_chain
+			local iif_expr=""
+			[ -n "$iface" ] && iif_expr="-i ${iface}"
+			iptables -t filter -A ${fw3_chain} -p igmp $iif_expr -m comment --comment "$comment" -j ACCEPT 2>/dev/null
+			;;
+	esac
+}
+
+# ======================================================================
+# 构建 socat 地址字符串
+# ======================================================================
+
+build_address() {
+	local proto="$1"
+	local addr="$2"
+	local port="$3"
+	local unix_path="$4"
+	local is_src="$5"
+
+	case "$proto" in
+		tcp|tcp4|tcp6)
+			local proto_upper="$(echo $proto | tr '[:lower:]' '[:upper:]')"
+			if [ "$is_src" = "1" ]; then
+				[ -n "$addr" ] && echo "${proto_upper}-LISTEN:${port},bind=${addr}" \
+				               || echo "${proto_upper}-LISTEN:${port}"
+			else
+				echo "${proto_upper}:${addr}:${port}"
+			fi
+			;;
+		udp|udp4|udp6)
+			local proto_upper="$(echo $proto | tr '[:lower:]' '[:upper:]')"
+			if [ "$is_src" = "1" ]; then
+				[ -n "$addr" ] && echo "${proto_upper}-LISTEN:${port},bind=${addr}" \
+				               || echo "${proto_upper}-LISTEN:${port}"
+			else
+				echo "${proto_upper}:${addr}:${port}"
+			fi
+			;;
+		unix)
+			[ "$is_src" = "1" ] && echo "UNIX-LISTEN:${unix_path}" \
+			                    || echo "UNIX-CONNECT:${unix_path}"
+			;;
+		openssl)
+			local cert key cafile verify
+			config_get cert   "$section" ssl_cert   ""
+			config_get key    "$section" ssl_key    ""
+			config_get verify "$section" ssl_verify "0"
+			config_get cafile "$section" ssl_cafile ""
+			local extra=""
+			[ -n "$cert" ]      && extra="${extra},cert=${cert}"
+			[ -n "$key" ]       && extra="${extra},key=${key}"
+			[ "$verify" = "1" ] && [ -n "$cafile" ] && extra="${extra},cafile=${cafile}"
+			[ "$verify" != "1" ] && extra="${extra},verify=0"
+			if [ "$is_src" = "1" ]; then
+				local bind=""
+				[ -n "$addr" ] && bind=",bind=${addr}"
+				echo "OPENSSL-LISTEN:${port}${bind}${extra}"
+			else
+				echo "OPENSSL:${addr}:${port}${extra}"
+			fi
+			;;
+		multicast)
+			# 由 build_multicast_src / build_multicast_dst 单独处理
+			echo ""
+			;;
+		*)
+			echo "${proto}:${addr}:${port}"
+			;;
+	esac
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# 组播地址构建
+#
+# 接收侧（src_proto=multicast）：
+#   UDP4-RECV:<port>,ip-add-membership=<group>:<localip>,so-bindtodevice=<iface>,reuseaddr
+#
+# 发送侧（dst_proto=multicast）：
+#   UDP4-DATAGRAM:<dst_group>:<dst_port>,ip-multicast-if=<iface>,ip-multicast-ttl=<ttl>
+#
+# 发送侧（dst_proto=udp，组播转单播）：
+#   UDP4-SENDTO:<dst_addr>:<dst_port>
+# ──────────────────────────────────────────────────────────────────────
+build_multicast_src() {
+	local section="$1"
+	local mc_port mc_src_group mc_src_localip mc_src_iface mc_reuseaddr
+
+	config_get      mc_port        "$section" mc_port        ""
+	config_get      mc_src_group   "$section" mc_src_group   ""
+	config_get      mc_src_localip "$section" mc_src_localip ""
+	config_get      mc_src_iface   "$section" mc_src_iface   ""
+	config_get_bool mc_reuseaddr   "$section" mc_reuseaddr   1
+
+	# mc_port 未配置时直接返回空，由 start_instance 层面拦截
+	[ -z "$mc_port" ] && { logger -t socat-luci "[$section] 组播端口未配置，跳过启动"; echo ""; return 1; }
+
+	local addr_str="UDP4-RECV:${mc_port}"
+
+	# ip-add-membership=<组播组>:<本机网卡IP>  向内核注册加入该组播组
+	# 若 mc_src_localip 为空但指定了接口，自动从系统读取当前 IP（兼容 PPPoE 重拨）
+	if [ -z "$mc_src_localip" ] && [ -n "$mc_src_iface" ]; then
+		mc_src_localip=$(ip -4 addr show dev "$mc_src_iface" 2>/dev/null | \
+			awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+	fi
+
+	if [ -n "$mc_src_group" ] && [ -n "$mc_src_localip" ]; then
+		addr_str="${addr_str},ip-add-membership=${mc_src_group}:${mc_src_localip}"
+	elif [ -n "$mc_src_group" ]; then
+		addr_str="${addr_str},ip-add-membership=${mc_src_group}:0.0.0.0"
+	fi
+
+	# bind=<组播组地址>：将 socket 绑定到具体的组播 IP，
+	# 内核只把目标地址匹配的包送给此 socket，
+	# 多条规则使用同一端口时互不干扰，防止混流
+	[ -n "$mc_src_group" ] && addr_str="${addr_str},bind=${mc_src_group}"
+
+	# so-bindtodevice  将 socket 绑定到指定网卡，防止从错误接口收包
+	[ -n "$mc_src_iface" ] && addr_str="${addr_str},so-bindtodevice=${mc_src_iface}"
+
+	[ "$mc_reuseaddr" = "1" ] && addr_str="${addr_str},reuseaddr"
+
+	echo "$addr_str"
+}
+
+build_multicast_dst() {
+	local section="$1"
+	local dst_proto mc_dst_group mc_dst_port dst_addr dst_port
+	local mc_dst_iface mc_ttl mc_loop
+
+	config_get      dst_proto    "$section" dst_proto    "udp"
+	config_get      mc_dst_group "$section" mc_dst_group ""
+	config_get      mc_dst_port  "$section" mc_dst_port  ""
+	config_get      dst_addr     "$section" dst_addr     ""
+	config_get      dst_port     "$section" dst_port     ""
+	config_get      mc_dst_iface "$section" mc_dst_iface ""
+	config_get      mc_ttl       "$section" mc_ttl       "1"
+	config_get_bool mc_loop      "$section" mc_loop      0
+
+	case "$dst_proto" in
+		multicast)
+			# 组播中继：转发到另一个组播组（跨网段）
+			local addr_str="UDP4-DATAGRAM:${mc_dst_group}:${mc_dst_port}"
+			[ -n "$mc_dst_iface" ] && addr_str="${addr_str},ip-multicast-if=${mc_dst_iface}"
+			addr_str="${addr_str},ip-multicast-ttl=${mc_ttl}"
+			[ "$mc_loop" = "1" ] && addr_str="${addr_str},ip-multicast-loop=1"
+			echo "$addr_str"
+			;;
+		udp|udp4)
+			# 组播转单播 UDP
+			echo "UDP4-SENDTO:${dst_addr}:${dst_port}"
+			;;
+		tcp|tcp4)
+			# 组播转单播 TCP（如推给 RTSP 服务器）
+			echo "TCP4:${dst_addr}:${dst_port}"
+			;;
+		*)
+			echo "UDP4-SENDTO:${dst_addr}:${dst_port}"
+			;;
+	esac
+}
+
+start_instance() {
+	local section="$1"
+	local enable name src_proto src_addr src_port src_unix_path
+	local dst_proto dst_addr dst_port dst_unix_path
+	local backlog fork_count timeout retry reuseaddr nodelay keepalive
+	local user custom_opts fw_enable
+
+	config_get_bool enable "$section" enable 1
+	[ "$enable" = "0" ] && return 0
+
+	config_get name           "$section" name           "$section"
+	config_get src_proto      "$section" src_proto      "tcp"
+	config_get src_addr       "$section" src_addr       ""
+	config_get src_port       "$section" src_port       ""
+	config_get src_unix_path  "$section" src_unix_path  ""
+	config_get dst_proto      "$section" dst_proto      "tcp"
+	config_get dst_addr       "$section" dst_addr       ""
+	config_get dst_port       "$section" dst_port       ""
+	config_get dst_unix_path  "$section" dst_unix_path  ""
+	config_get backlog        "$section" backlog        "5"
+	config_get fork_count     "$section" fork_count     "0"
+	config_get timeout        "$section" timeout        ""
+	config_get retry          "$section" retry          ""
+	config_get_bool reuseaddr "$section" reuseaddr      1
+	config_get_bool nodelay   "$section" nodelay        0
+	config_get_bool keepalive "$section" keepalive      1
+	config_get user           "$section" user           ""
+	config_get custom_opts    "$section" custom_opts    ""
+	config_get_bool fw_enable "$section" fw_enable      1
+
+	# ── 构建 socat 地址字符串 ────────────────────────────────────────
+	local src_addr_str dst_addr_str
+
+	if [ "$src_proto" = "multicast" ]; then
+		# 组播接收模式：使用 UDP4-RECV + ip-add-membership
+		src_addr_str=$(build_multicast_src "$section")
+		# build_multicast_src 返回空表示配置缺失，跳过此实例
+		[ -z "$src_addr_str" ] && return 0
+		dst_addr_str=$(build_multicast_dst "$section")
+	else
+		src_addr_str=$(build_address "$src_proto" "$src_addr" "$src_port" "$src_unix_path" "1")
+		dst_addr_str=$(build_address "$dst_proto" "$dst_addr" "$dst_port" "$dst_unix_path" "0")
+
+		# 追加通用 TCP 选项
+		case "$src_proto" in tcp*|openssl)
+			[ "$reuseaddr" = "1" ] && src_addr_str="${src_addr_str},reuseaddr"
+			[ "$nodelay"   = "1" ] && src_addr_str="${src_addr_str},nodelay"
+			[ "$keepalive" = "1" ] && src_addr_str="${src_addr_str},keepalive"
+			src_addr_str="${src_addr_str},fork"
+			[ "$backlog" -gt 0 ] 2>/dev/null && src_addr_str="${src_addr_str},backlog=${backlog}"
+			# max-children 是 socat 地址选项，限制并发子进程数（0=不限制）
+			[ "$fork_count" != "0" ] && src_addr_str="${src_addr_str},max-children=${fork_count}"
+			;;
+		esac
+	fi
+
+	# ── 防火墙放行规则 ──────────────────────────────────────────────
+	if [ "$fw_enable" = "1" ] && [ "$FW_BACKEND" != "none" ]; then
+		if [ "$src_proto" = "multicast" ]; then
+			local mc_port mc_src_iface
+			config_get mc_port      "$section" mc_port      ""
+			config_get mc_src_iface "$section" mc_src_iface ""
+			# 放行 UDP 组播端口
+			[ -n "$mc_port" ] && fw_add_rule "$section" "udp" "" "$mc_port"
+			# 放行 IGMP（协议号 2），用于加入/维持组播组成员关系
+			fw_add_igmp_rule "$section" "$mc_src_iface"
+		else
+			local fw_proto
+			fw_proto=$(fw_proto "$src_proto")
+			[ -n "$fw_proto" ] && [ -n "$src_port" ] && \
+				fw_add_rule "$section" "$fw_proto" "$src_addr" "$src_port"
+		fi
+	fi
+
+	# ── 启动 procd 实例 ─────────────────────────────────────────────
+	# 必须在 procd_open_instance 之前创建目录，否则 procd 记录 pidfile 路径后
+	# 若目录不存在，停止实例时会报 "Failed to remove pidfile" 错误
+	mkdir -p "$RUNDIR"
+
+	procd_open_instance "$section"
+	procd_set_param command "$PROG"
+
+	[ -n "$timeout"    ] && procd_append_param command "-T" "$timeout"
+	[ -n "$retry"      ] && procd_append_param command "-R" "$retry"
+	[ -n "$custom_opts" ] && procd_append_param command $custom_opts
+
+	procd_append_param command "$src_addr_str"
+	procd_append_param command "$dst_addr_str"
+
+	procd_set_param respawn 3 5 0
+	# respawn 参数说明：threshold=3s delay=5s max_fail=0（0=永不放弃）
+	# 组播规则在 PPPoE 未拨号时启动会失败，procd 持续重试；
+	# 待 PPPoE 拨号成功后，hotplug 脚本会触发 reload 彻底解决。
+	procd_set_param stderr 1
+	procd_set_param pidfile "$RUNDIR/${section}.pid"
+	[ -n "$user" ] && procd_set_param user "$user"
+
+	procd_close_instance
+}
+
+start_service() {
+	local global_enable
+	config_load socat
+	config_get_bool global_enable global enable 1
+	[ "$global_enable" = "0" ] && return 0
+
+	FW_BACKEND=$(detect_fw)
+	mkdir -p "$RUNDIR"
+	config_foreach start_instance socat
+}
+
+stop_service() {
+	FW_BACKEND=$(detect_fw)
+	fw_flush_all
+	[ -d "$RUNDIR" ] && rm -f "$RUNDIR"/*.pid
+}
+
+# uninstall：卸载插件前手动调用，完整清理服务、防火墙、LuCI 缓存
+# 用法：/etc/init.d/socat-luci uninstall
+uninstall() {
+	# 停止并禁用服务
+	stop
+	disable
+	# 清 LuCI 缓存
+	rm -f /tmp/luci-indexcache 2>/dev/null
+	rm -f /tmp/luci-modulecache.* 2>/dev/null
+	# 清 hotplug 脚本
+	rm -f /etc/hotplug.d/iface/25-socat-luci 2>/dev/null
+	# 重启 rpcd
+	/etc/init.d/rpcd restart 2>/dev/null
+	logger -t socat-luci "卸载清理完成"
+	echo "socat-luci 卸载清理完成，现在可以执行 opkg remove luci-app-socat"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "socat"
+	# 监听防火墙配置变化，联动重载
+	procd_add_reload_trigger "firewall"
+}
+
+reload_service() {
+	FW_BACKEND=$(detect_fw)
+	# 清理旧防火墙规则
+	fw_flush_all
+	# 重建防火墙规则（procd 会重新调用 start_service）
+	start_service
+}

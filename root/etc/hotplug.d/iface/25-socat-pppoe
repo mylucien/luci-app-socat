@@ -1,0 +1,52 @@
+#!/bin/sh
+# 监听接口 UP 事件，当组播规则绑定的 PPPoE 接口重拨后自动更新本机 IP 并重载
+# $INTERFACE = UCI 接口名，如 IPTV
+# $DEVICE    = 实际设备名，如 pppoe-IPTV
+# mc_src_iface 存的是实际设备名（pppoe-IPTV），用 $DEVICE 匹配
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+. /lib/functions.sh
+config_load socat 2>/dev/null || exit 0
+
+NEED_RELOAD=0
+
+update_localip() {
+    local section="$1"
+    local src_proto mc_src_iface mc_src_localip
+
+    config_get src_proto    "$section" src_proto    ""
+    config_get mc_src_iface "$section" mc_src_iface ""
+
+    # 只处理组播规则
+    [ "$src_proto" = "multicast" ] || return
+
+    # mc_src_iface 可能填的是设备名（pppoe-IPTV）或 UCI 接口名（IPTV）
+    # 两种情况都兼容
+    if [ "$mc_src_iface" != "$DEVICE" ] && [ "$mc_src_iface" != "$INTERFACE" ]; then
+        return
+    fi
+
+    # 获取接口当前最新 IP
+    local new_ip
+    new_ip=$(ip -4 addr show dev "$DEVICE" 2>/dev/null \
+        | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+    [ -z "$new_ip" ] && return
+
+    config_get mc_src_localip "$section" mc_src_localip ""
+
+    # IP 没变不重载
+    [ "$mc_src_localip" = "$new_ip" ] && return
+
+    logger -t socat-luci "[$section] $INTERFACE 重拨 IP: $mc_src_localip -> $new_ip，更新配置"
+    uci set socat."$section".mc_src_localip="$new_ip"
+    NEED_RELOAD=1
+}
+
+config_foreach update_localip socat
+
+if [ "$NEED_RELOAD" = "1" ]; then
+    uci commit socat
+    /etc/init.d/socat-luci reload 2>/dev/null
+    logger -t socat-luci "socat 已重载，新 IP 生效"
+fi

@@ -1,0 +1,45 @@
+#!/bin/sh
+# luci-app-socat 安装后初始化脚本
+
+# 1. 修复 init.d 脚本权限
+chmod 755 /etc/init.d/socat-luci 2>/dev/null
+chmod 755 /etc/hotplug.d/iface/25-socat-luci 2>/dev/null
+
+# 2. 清理 opkg conffile 冲突副本
+rm -f /etc/config/socat-opkg 2>/dev/null
+
+# 3. 确保 /etc/config/socat 存在且有 global section
+if [ ! -f /etc/config/socat ]; then
+    printf 'config global\n\toption enable '"'"'1'"'"'\n' > /etc/config/socat
+fi
+if ! uci -q get socat.@global[0] >/dev/null 2>&1; then
+    uci add socat global >/dev/null 2>&1
+    uci set socat.@global[0].enable=1
+    uci commit socat
+fi
+
+# 4. 注册 opkg post-remove 钩子，卸载时自动清理
+# opkg 支持 /etc/opkg/post-remove.d/ 目录（部分版本）
+mkdir -p /etc/opkg/post-remove.d 2>/dev/null
+cat > /etc/opkg/post-remove.d/luci-app-socat << 'HOOK'
+#!/bin/sh
+[ "$1" = "luci-app-socat" ] || exit 0
+/etc/init.d/socat-luci stop 2>/dev/null
+/etc/init.d/socat-luci disable 2>/dev/null
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache.* 2>/dev/null
+rm -f /etc/hotplug.d/iface/25-socat-luci 2>/dev/null
+/etc/init.d/rpcd restart 2>/dev/null
+HOOK
+chmod 755 /etc/opkg/post-remove.d/luci-app-socat 2>/dev/null
+
+# 5. 启用 socat-luci 服务
+/etc/init.d/socat-luci enable 2>/dev/null
+
+# 6. 重启 rpcd
+/etc/init.d/rpcd restart 2>/dev/null
+
+# 7. 清除 LuCI 菜单缓存
+rm -f /tmp/luci-indexcache 2>/dev/null
+rm -f /tmp/luci-modulecache.* 2>/dev/null
+
+exit 0

@@ -1,0 +1,218 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Socat 端口转发"
+msgstr "Socat 端口转发"
+
+msgid "Socat（SOcket CAT）是一个多功能的网络工具，可在两个数据流之间建立双向通道，支持 TCP、UDP、Unix Socket 等多种协议的转发与代理。"
+msgstr "Socat（SOcket CAT）是一个多功能的网络工具，可在两个数据流之间建立双向通道，支持 TCP、UDP、Unix Socket 等多种协议的转发与代理。"
+
+msgid "全局设置"
+msgstr "全局设置"
+
+msgid "启用 Socat"
+msgstr "启用 Socat"
+
+msgid "开启或关闭所有 Socat 转发规则"
+msgstr "开启或关闭所有 Socat 转发规则"
+
+msgid "转发规则"
+msgstr "转发规则"
+
+msgid "添加规则"
+msgstr "添加规则"
+
+msgid "删除规则"
+msgstr "删除规则"
+
+msgid "规则名称"
+msgstr "规则名称"
+
+msgid "协议"
+msgstr "协议"
+
+msgid "监听"
+msgstr "监听"
+
+msgid "目标"
+msgstr "目标"
+
+msgid "状态"
+msgstr "状态"
+
+msgid "启用"
+msgstr "启用"
+
+msgid "编辑转发规则"
+msgstr "编辑转发规则"
+
+msgid "启用此规则"
+msgstr "启用此规则"
+
+msgid "用于标识此转发规则的名称，支持中文"
+msgstr "用于标识此转发规则的名称，支持中文"
+
+msgid "备注说明"
+msgstr "备注说明"
+
+msgid "可选，填写此规则的用途说明"
+msgstr "可选，填写此规则的用途说明"
+
+msgid "监听端配置"
+msgstr "监听端配置"
+
+msgid "监听协议"
+msgstr "监听协议"
+
+msgid "TCP（仅 IPv4）"
+msgstr "TCP（仅 IPv4）"
+
+msgid "TCP（仅 IPv6）"
+msgstr "TCP（仅 IPv6）"
+
+msgid "UDP（仅 IPv4）"
+msgstr "UDP（仅 IPv4）"
+
+msgid "UDP（仅 IPv6）"
+msgstr "UDP（仅 IPv6）"
+
+msgid "Unix Socket"
+msgstr "Unix Socket"
+
+msgid "TLS/SSL"
+msgstr "TLS/SSL"
+
+msgid "监听地址"
+msgstr "监听地址"
+
+msgid "留空表示监听所有接口（0.0.0.0），也可指定 IP，如 192.168.1.1"
+msgstr "留空表示监听所有接口（0.0.0.0），也可指定 IP，如 192.168.1.1"
+
+msgid "Unix Socket 路径"
+msgstr "Unix Socket 路径"
+
+msgid "Unix Socket 文件路径，如 /var/run/socat.sock"
+msgstr "Unix Socket 文件路径，如 /var/run/socat.sock"
+
+msgid "监听端口"
+msgstr "监听端口"
+
+msgid "填写 1-65535 范围内的端口号"
+msgstr "填写 1-65535 范围内的端口号"
+
+msgid "连接队列长度"
+msgstr "连接队列长度"
+
+msgid "TCP 连接队列最大长度，默认 5"
+msgstr "TCP 连接队列最大长度，默认 5"
+
+msgid "目标端配置"
+msgstr "目标端配置"
+
+msgid "目标协议"
+msgstr "目标协议"
+
+msgid "目标地址"
+msgstr "目标地址"
+
+msgid "转发目标的 IP 地址或域名"
+msgstr "转发目标的 IP 地址或域名"
+
+msgid "目标 Unix Socket 路径"
+msgstr "目标 Unix Socket 路径"
+
+msgid "目标端口"
+msgstr "目标端口"
+
+msgid "高级选项"
+msgstr "高级选项"
+
+msgid "最大并发连接数"
+msgstr "最大并发连接数"
+
+msgid "0 表示不限制并发连接数"
+msgstr "0 表示不限制并发连接数"
+
+msgid "连接超时（秒）"
+msgstr "连接超时（秒）"
+
+msgid "连接无活动超时时间，0 表示禁用"
+msgstr "连接无活动超时时间，0 表示禁用"
+
+msgid "重连次数"
+msgstr "重连次数"
+
+msgid "连接失败后的重试次数"
+msgstr "连接失败后的重试次数"
+
+msgid "重用地址（SO_REUSEADDR）"
+msgstr "重用地址（SO_REUSEADDR）"
+
+msgid "允许立即复用处于 TIME_WAIT 状态的端口"
+msgstr "允许立即复用处于 TIME_WAIT 状态的端口"
+
+msgid "禁用 Nagle 算法（TCP_NODELAY）"
+msgstr "禁用 Nagle 算法（TCP_NODELAY）"
+
+msgid "减少延迟，适合交互式流量如 SSH"
+msgstr "减少延迟，适合交互式流量如 SSH"
+
+msgid "启用 TCP Keepalive"
+msgstr "启用 TCP Keepalive"
+
+msgid "定期发送探测包以检测连接存活"
+msgstr "定期发送探测包以检测连接存活"
+
+msgid "运行用户"
+msgstr "运行用户"
+
+msgid "以指定用户身份运行，留空则使用 root"
+msgstr "以指定用户身份运行，留空则使用 root"
+
+msgid "自定义参数"
+msgstr "自定义参数"
+
+msgid "直接追加到 socat 命令行的额外参数，供高级用户使用"
+msgstr "直接追加到 socat 命令行的额外参数，供高级用户使用"
+
+msgid "TLS 配置"
+msgstr "TLS 配置"
+
+msgid "TLS 证书路径"
+msgstr "TLS 证书路径"
+
+msgid "PEM 格式的证书文件路径"
+msgstr "PEM 格式的证书文件路径"
+
+msgid "TLS 私钥路径"
+msgstr "TLS 私钥路径"
+
+msgid "PEM 格式的私钥文件路径"
+msgstr "PEM 格式的私钥文件路径"
+
+msgid "验证对端证书"
+msgstr "验证对端证书"
+
+msgid "开启时将验证对端 TLS 证书的有效性"
+msgstr "开启时将验证对端 TLS 证书的有效性"
+
+msgid "CA 证书路径"
+msgstr "CA 证书路径"
+
+msgid "验证对端证书时使用的 CA 证书文件"
+msgstr "验证对端证书时使用的 CA 证书文件"
+
+msgid "防火墙"
+msgstr "防火墙"
+
+msgid "自动放行入站端口"
+msgstr "自动放行入站端口"
+
+msgid "启动时自动在防火墙（firewall3/iptables 或 firewall4/nftables）中添加放行规则，停止时自动清除。若端口已在防火墙规则中手动放行，可关闭此选项。"
+msgstr "启动时自动在防火墙（firewall3/iptables 或 firewall4/nftables）中添加放行规则，停止时自动清除。若端口已在防火墙规则中手动放行，可关闭此选项。"
+
+msgid "防火墙后端说明"
+msgstr "防火墙后端说明"
+

@@ -1,0 +1,30 @@
+#!/bin/sh
+# PPPoE 重拨后自动重载 socat-luci，确保组播 ip-add-membership 使用新 IP
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+# 检查是否有组播规则依赖这个接口
+IFACE_MATCH=0
+. /lib/functions.sh
+config_load socat
+
+check_iface() {
+    local section="$1"
+    local src_proto mc_src_iface
+    config_get src_proto   "$section" src_proto   ""
+    config_get mc_src_iface "$section" mc_src_iface ""
+    # 接口名可能是逻辑名（IPTV）或物理名（pppoe-IPTV），都判断
+    if [ "$src_proto" = "multicast" ]; then
+        if [ "$mc_src_iface" = "$INTERFACE" ] || \
+           [ "$mc_src_iface" = "$DEVICE" ] || \
+           [ "$(uci -q get network.${INTERFACE}.device)" = "$mc_src_iface" ]; then
+            IFACE_MATCH=1
+        fi
+    fi
+}
+config_foreach check_iface socat
+
+[ "$IFACE_MATCH" = "1" ] || exit 0
+
+logger -t socat-luci "接口 $INTERFACE ($DEVICE) 重新上线，重载组播规则"
+/etc/init.d/socat-luci reload
